@@ -71,18 +71,27 @@ __global__ void _RepeatKernel(
     DType* out, int64_t n_row, int64_t length) {
   int tx = blockIdx.x * blockDim.x + threadIdx.x;
   const int stride_x = gridDim.x * blockDim.x;
+
+  __shared__ IdType l;
   while (tx < length) {
-    IdType l = 0, r = n_row, m = 0;
-    while (l < r) {
-      m = l + (r-l)/2;
-      if (tx >= pos[m]) {
-        l = m+1;
-      } else {
-        r = m;
+    if (threadIdx.x==0){
+      IdType r = n_row, m = 0;
+      l = 0;
+      while (l < r) {
+        m = l + (r-l)/2;
+        if (tx >= pos[m]) {
+          l = m+1;
+        } else {
+          r = m;
+        }
       }
     }
-
-    IdType rpos = l-1;
+    __syncthreads();
+    IdType rpos = l;
+    while (pos[rpos]<=tx) {
+      ++rpos;
+    }
+    --rpos;
     IdType rofs = tx - pos[rpos];
     out[tx] = val[rpos];
     tx += stride_x;
@@ -99,8 +108,8 @@ COOMatrix CSRToCOO<kDLGPU, int64_t>(CSRMatrix csr) {
   IdArray row_nnz = CSRGetRowNNZ(csr, rowids);
   IdArray ret_row = NewIdArray(nnz, ctx, nbits);
 
-  const int nt = 256;
-  const int nb = (nnz + nt - 1) / nt;
+  const int nt = 128;
+  const int nb = (nnz/4 + nt - 1) / nt;
   auto start = high_resolution_clock::now();
   CUDA_KERNEL_CALL(_RepeatKernel,
       nb, nt, 0, thr_entry->stream,
